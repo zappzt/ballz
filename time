@@ -1,0 +1,114 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Stats = game:GetService("Stats")
+
+local Player = Players.LocalPlayer
+local Character = Player.Character or Player.CharacterAdded:Wait()
+
+-- Constants
+local QUICK_DRAW_TIERS = {
+    Bronze = 0.042,
+    Silver = 0.071,
+    Gold = 0.09,
+    HoF = 0.1095,
+}
+
+local SHOT_TIMINGS = {
+    ["Standing Shot"] = 0.5812,
+    ["Moving Shot"] = 0.6734424,
+    ["Close Floater"] = 0.3575,
+    ["Floater"] = 0.3702,
+    ["Layup"] = 0.4603,
+    ["Standing Layup"] = 0.459,
+    ["Reverse Layup"] = 0.6287178,
+    ["Moving Dunk"] = 0.511,
+    ["Standing Dunk"] = 0.467,
+    ["Close Post Fade"] = 0.93,
+    ["Post Fade"] = 0.571,
+}
+
+-- Cache frequently accessed services and objects
+local PlayerValues = Player:WaitForChild("Backpack"):WaitForChild("PlayerValues")
+local PlayerEvents = ReplicatedStorage:WaitForChild("PlayerEvents")
+local NetworkStats = Stats.Network.ServerStatsItem["Data Ping"]
+
+-- Variables
+local QuickDrawTier = nil
+local currentShotType = nil
+local currentDunkType = nil
+
+-- Initialize QuickDraw tier detection
+local function initializeQuickDrawTier()
+    for _, v in next, getgc(true) do
+        if type(v) == "table" then
+            local badges = v.Badges or (v.badges and v.badges) -- Handle different capitalization
+            if type(badges) == "table" and badges.QuickDraw then
+                if QUICK_DRAW_TIERS[badges.QuickDraw] then
+                    QuickDrawTier = badges.QuickDraw
+                    break
+                end
+            end
+        end
+    end
+end
+
+task.spawn(initializeQuickDrawTier)
+
+-- Calculate adjusted timing based on ping and QuickDraw
+local function getAdjustedTiming(baseTiming, shotType)
+    if not baseTiming then return nil end
+    
+    local pingAdjustment = NetworkStats:GetValue() / 1000
+    local adjustedTiming = math.max(baseTiming - pingAdjustment, 0)
+    
+    if shotType == "Standing Shot" and QuickDrawTier and QUICK_DRAW_TIERS[QuickDrawTier] then
+        adjustedTiming = adjustedTiming - QUICK_DRAW_TIERS[QuickDrawTier]
+    end
+    
+    return adjustedTiming
+end
+
+-- Hook for detecting shot types
+local originalNamecall
+originalNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+    local method = getnamecallmethod()
+    
+    if method == "FireServer" and self.Name == "Shooting" then
+        local args = {...}
+        if type(args[3]) == "string" then
+            currentShotType = args[3]
+            currentDunkType = nil
+        else
+            currentDunkType = args[2]
+            currentShotType = nil
+        end
+    end
+    
+    return originalNamecall(self, ...)
+end)
+
+-- Handle shot timing
+PlayerValues.HandValue.Changed:Connect(function(newValue)
+    if newValue == "Shooting" and currentShotType and SHOT_TIMINGS[currentShotType] then
+        local timing = getAdjustedTiming(SHOT_TIMINGS[currentShotType], currentShotType)
+        if timing then
+            task.delay(timing, function()
+                PlayerEvents.Shooting:FireServer(false, "Shooting", currentShotType)
+            end)
+        end
+    elseif newValue == "Dunking" and currentDunkType and SHOT_TIMINGS[currentDunkType] then
+        local timing = getAdjustedTiming(SHOT_TIMINGS[currentDunkType], currentDunkType)
+        if timing then
+            task.delay(timing, function()
+                PlayerEvents.Shooting:FireServer(false, currentDunkType, 1)
+            end)
+        end
+    end
+end)
+
+-- Cleanup when player leaves
+Player.CharacterRemoving:Connect(function()
+    if originalNamecall then
+        unhookmetamethod(game, "__namecall", originalNamecall)
+    end
+end)
