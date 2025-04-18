@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Stats = game:GetService("Stats")
+local RunService = game:GetService("RunService")
 
 local Player = Players.LocalPlayer
 local Character = Player.Character or Player.CharacterAdded:Wait()
@@ -36,6 +37,17 @@ local NetworkStats = Stats.Network.ServerStatsItem["Data Ping"]
 local QuickDrawTier = nil
 local currentShotType = nil
 local currentDunkType = nil
+local currentPing = 0
+local pingUpdateConnection = nil
+
+-- Ping monitoring function
+local function monitorPing()
+    if pingUpdateConnection then pingUpdateConnection:Disconnect() end
+    
+    pingUpdateConnection = RunService.Heartbeat:Connect(function()
+        currentPing = NetworkStats:GetValue() / 1000  -- Convert to seconds
+    end)
+end
 
 -- Initialize QuickDraw tier detection
 local function initializeQuickDrawTier()
@@ -52,14 +64,11 @@ local function initializeQuickDrawTier()
     end
 end
 
-task.spawn(initializeQuickDrawTier)
-
--- Calculate adjusted timing based on ping and QuickDraw
+-- Calculate adjusted timing based on current ping and QuickDraw
 local function getAdjustedTiming(baseTiming, shotType)
     if not baseTiming then return nil end
     
-    local pingAdjustment = NetworkStats:GetValue() / 1000
-    local adjustedTiming = math.max(baseTiming - pingAdjustment, 0)
+    local adjustedTiming = math.max(baseTiming - currentPing, 0)
     
     if shotType == "Standing Shot" and QuickDrawTier and QUICK_DRAW_TIERS[QuickDrawTier] then
         adjustedTiming = adjustedTiming - QUICK_DRAW_TIERS[QuickDrawTier]
@@ -87,7 +96,7 @@ originalNamecall = hookmetamethod(game, "__namecall", function(self, ...)
     return originalNamecall(self, ...)
 end)
 
--- Handle shot timing
+-- Handle shot timing with dynamic ping adjustment
 PlayerValues.HandValue.Changed:Connect(function(newValue)
     if newValue == "Shooting" and currentShotType and SHOT_TIMINGS[currentShotType] then
         local timing = getAdjustedTiming(SHOT_TIMINGS[currentShotType], currentShotType)
@@ -106,9 +115,16 @@ PlayerValues.HandValue.Changed:Connect(function(newValue)
     end
 end)
 
+-- Initialize systems
+task.spawn(initializeQuickDrawTier)
+monitorPing()
+
 -- Cleanup when player leaves
 Player.CharacterRemoving:Connect(function()
     if originalNamecall then
         unhookmetamethod(game, "__namecall", originalNamecall)
+    end
+    if pingUpdateConnection then
+        pingUpdateConnection:Disconnect()
     end
 end)
